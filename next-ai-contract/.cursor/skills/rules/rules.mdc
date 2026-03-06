@@ -1,0 +1,44 @@
+---
+description: Follow all Vercel React Best Practices rules from .cursor/skills/vercel-react-best-practices/
+alwaysApply: true
+globs:
+  - "**/*.tsx"
+  - "**/*.ts"
+  - "**/*.jsx"
+  - "**/*.js"
+  - "app/**/*"
+  - "components/**/*"
+---
+
+# Vercel React Best Practices - Project Rules
+
+## 🎯 MANDATORY: Follow All Rules
+
+**CRITICAL**: You MUST follow ALL rules in `.cursor/skills/vercel-react-best-practices/` when writing, reviewing, or refactoring React/Next.js code.
+
+### Reference Documents
+
+- **Full Guide**: `.cursor/skills/vercel-react-best-practices/AGENTS.md` (complete with all examples)
+- **Quick Reference**: `.cursor/skills/vercel-react-best-practices/SKILL.md` (rule categories and priorities)
+- **Individual Rules**: `.cursor/skills/vercel-react-best-practices/rules/*.md` (detailed examples)
+
+---
+
+## 🚨 CRITICAL RULES (Must Follow)
+
+### 1. Client-Side Data Fetching: ALWAYS Use React Query + Axios
+
+**⚠️ OVERRIDE**: This rule OVERRIDES the SWR recommendation from `.cursor/skills/vercel-react-best-practices/rules/client-swr-dedup.md`. We use **React Query (TanStack Query)** + **Axios** instead of SWR.
+
+**❌ NEVER DO THIS:**pescript
+// WRONG: useState + useEffect + fetch pattern
+function ContractsPage() {
+  const [contracts, setContracts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  useEffect(() => {
+    contractsApi.list()
+      .then(setContracts)
+      .finally(() => setLoading(false));
+  }, []);
+}

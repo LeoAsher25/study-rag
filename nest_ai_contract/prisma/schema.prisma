@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Contract {
+  id          String        @id @default(uuid())
+  title       String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  files       ContractFile[]
+  sessions    ChatSession[]
+}
+
+model ContractFile {
+  id            String   @id @default(uuid())
+  contractId    String
+  contract      Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  versionNumber Int      @default(1)
+  originalName  String
+  mimeType      String
+  storagePath   String
+
+  status        ContractFileStatus @default(UPLOADED)
+  extractedText String?  @db.Text
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  chunks        Chunk[]
+
+  @@index([contractId])
+}
+
+enum ContractFileStatus {
+  UPLOADED
+  EXTRACTED
+  EMBEDDED
+  READY
+  FAILED
+}
+
+model Chunk {
+  id            String   @id @default(uuid())
+  contractFileId String
+  contractFile   ContractFile @relation(fields: [contractFileId], references: [id], onDelete: Cascade)
+
+  chunkIndex    Int
+  content       String   @db.Text
+  contentHash   String
+
+  // NOTE: embedding is stored as pgvector 'vector' column created by SQL migration.
+  // Prisma doesn't fully type pgvector yet, so we use Unsupported.
+  embedding     Unsupported("vector")?
+
+  createdAt     DateTime @default(now())
+
+  @@unique([contractFileId, chunkIndex])
+  @@index([contractFileId])
+  @@index([contentHash])
+}
+
+model ChatSession {
+  id          String   @id @default(uuid())
+  contractId  String
+  contract    Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  title       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  messages    ChatMessage[]
+  @@index([contractId])
+}
+
+model ChatMessage {
+  id          String   @id @default(uuid())
+  sessionId   String
+  session     ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role        ChatRole
+  content     String   @db.Text
+  createdAt   DateTime @default(now())
+  citations   Json?
+  @@index([sessionId])
+}
+
+enum ChatRole {
+  user
+  assistant
+  system
+}
