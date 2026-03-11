@@ -3,3 +3,5 @@ java-ai-contract/
 fe-ai-contract/
 
 .DS_Store
+
+.serena/

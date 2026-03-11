@@ -31,8 +31,10 @@ export default function ContractDetailPage() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
 
-  // Find the newest READY file
-  const readyFile = useMemo(() => {
+  // Choose file for viewer:
+  // - Prefer newest READY file (ingested, ready for RAG)
+  // - If none, fall back to newest uploaded file so user can still view PDF
+  const viewerFile = useMemo(() => {
     if (!contract?.files) return null;
     
     const getUploadedTime = (f: ContractFile) => {
@@ -45,8 +47,14 @@ export default function ContractDetailPage() {
     const readyFiles = contract.files
       .filter((f) => f.status === "READY")
       .sort((a, b) => getUploadedTime(b) - getUploadedTime(a));
-    
-    return readyFiles[0] || null;
+
+    if (readyFiles[0]) return readyFiles[0];
+
+    // Fallback: newest file regardless of status (e.g. UPLOADED)
+    const sortedAll = [...contract.files].sort(
+      (a, b) => getUploadedTime(b) - getUploadedTime(a)
+    );
+    return sortedAll[0] || null;
   }, [contract]);
 
   const handleUploadSuccess = () => {
@@ -101,7 +109,7 @@ export default function ContractDetailPage() {
   }
 
   // Get PDF URL from backend response (url field)
-  const pdfUrl = readyFile?.url || null;
+  const pdfUrl = viewerFile?.url || null;
 
 
   return (
@@ -127,7 +135,7 @@ export default function ContractDetailPage() {
                   </TabsList>
 
                   <TabsContent value="general" className="flex-1 overflow-hidden mt-4">
-                    {pdfUrl  ? (
+                    {pdfUrl ? (
                       <div className="h-full border rounded-lg overflow-hidden">
                         <PdfViewer fileUrl={pdfUrl} />
                       </div>
@@ -176,12 +184,12 @@ export default function ContractDetailPage() {
                 <TabsTrigger value="history">History</TabsTrigger>
               </TabsList>
 
-                  <TabsContent value="general" className="flex-1 overflow-hidden mt-4">
-                    {pdfUrl && readyFile ? (
-                      <div className="h-full border rounded-lg overflow-hidden">
-                        <PdfViewer key={pdfUrl} fileUrl={pdfUrl} />
-                      </div>
-                    ) : (
+              <TabsContent value="general" className="flex-1 overflow-hidden mt-4">
+                {pdfUrl ? (
+                  <div className="h-full border rounded-lg overflow-hidden">
+                    <PdfViewer key={pdfUrl} fileUrl={pdfUrl} />
+                  </div>
+                ) : (
                   <div className="flex items-center justify-center h-full border rounded-lg bg-muted/20">
                     <div className="text-center space-y-2">
                       <p className="text-muted-foreground">Chưa có file PDF nào</p>

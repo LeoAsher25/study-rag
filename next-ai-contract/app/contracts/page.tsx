@@ -7,10 +7,28 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FileText, Plus, Search, AlertCircle, RefreshCw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import { CreateContractModal } from "@/components/contracts/create-contract-modal";
+
+function getContractStatusBadge(status?: string | null): { label: string; variant: "default" | "secondary" | "destructive" | "outline" | "ghost" | "link" } {
+  switch (status) {
+    case "READY":
+      return { label: "Ready", variant: "default" };
+    case "FAILED":
+      return { label: "Failed", variant: "destructive" };
+    case "EXTRACTED":
+      return { label: "Extracted", variant: "secondary" };
+    case "EMBEDDED":
+      return { label: "Embedded", variant: "secondary" };
+    case "UPLOADED":
+      return { label: "Uploaded", variant: "outline" };
+    default:
+      return { label: "Pending", variant: "outline" };
+  }
+}
 
 export default function ContractsPage() {
   const router = useRouter();
@@ -107,26 +125,33 @@ export default function ContractsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Title</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead>Created At</TableHead>
                   <TableHead>Updated At</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredContracts.map((contract) => (
-                  <TableRow
-                    key={contract.id}
-                    className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => router.push(`/contracts/${contract.id}`)}
-                  >
-                    <TableCell className="font-medium">{contract.title}</TableCell>
-                    <TableCell>
-                      {format(new Date(contract.createdAt), "dd/MM/yyyy HH:mm")}
-                    </TableCell>
-                    <TableCell>
-                      {format(new Date(contract.updatedAt), "dd/MM/yyyy HH:mm")}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {filteredContracts.map((contract) => {
+                  const { label, variant } = getContractStatusBadge(contract.status);
+                  return (
+                    <TableRow
+                      key={contract.id}
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => router.push(`/contracts/${contract.id}`)}
+                    >
+                      <TableCell className="font-medium">{contract.title}</TableCell>
+                      <TableCell>
+                        <Badge variant={variant}>{label}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        {format(new Date(contract.createdAt), "dd/MM/yyyy HH:mm")}
+                      </TableCell>
+                      <TableCell>
+                        {format(new Date(contract.updatedAt), "dd/MM/yyyy HH:mm")}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>

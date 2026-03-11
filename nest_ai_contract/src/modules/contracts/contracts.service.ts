@@ -3,6 +3,9 @@ import * as path from 'path';
 const pdfParse = require('pdf-parse');
 import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { PrismaService } from '../prisma/prisma.service';
 import { LangChainVectorstoreService } from '../ai/langchain-vectorstore.service';
 import { CreateContractDto } from './dto/create-contract.dto';
@@ -11,24 +14,56 @@ import { Document } from '@langchain/core/documents';
 import { v4 as uuidv4 } from 'uuid';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.resolve(process.cwd(), 'data', 'uploads');
-
 @Injectable()
 export class ContractsService {
   private readonly logger = new Logger(ContractsService.name);
+  private readonly s3Client: S3Client;
+  private readonly s3Bucket: string;
+  private readonly s3Prefix: string;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly vectorstore: LangChainVectorstoreService,
-  ) {}
+    @InjectQueue('ingest') private readonly ingestQueue: Queue,
+  ) {
+    this.s3Bucket = this.config.get<string>('AWS_S3_BUCKET') ?? '';
+    this.s3Prefix = (this.config.get<string>('AWS_S3_PREFIX') ?? '').replace(/^\/+|\/+$/g, '');
+    const region =
+      this.config.get<string>('AWS_REGION') ??
+      this.config.get<string>('AWS_REGION') ??
+      process.env.AWS_REGION ??
+      'ap-southeast-1';
+    this.s3Client = new S3Client({ region });
+  }
 
   async createContract(dto: CreateContractDto) {
     return this.prisma.contract.create({ data: { title: dto.title } });
   }
 
   async listContracts() {
-    return this.prisma.contract.findMany({ orderBy: { createdAt: 'desc' } });
+    const contracts = await this.prisma.contract.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        files: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    return contracts.map((contract) => {
+      const latestFile = contract.files[0];
+      const status = latestFile?.status ?? null;
+      const hasReadyFile = status === 'READY';
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { files, ...rest } = contract;
+      return {
+        ...rest,
+        status,
+        hasReadyFile,
+      };
+    });
   }
 
   private getFileUrl(contractId: string, fileId: string): string {
@@ -67,16 +102,170 @@ export class ContractsService {
       return null;
     }
 
-    const absolutePath = path.isAbsolute(contractFile.storagePath)
-      ? contractFile.storagePath
-      : path.resolve(contractFile.storagePath);
+    // Legacy helper kept for backward compatibility with disk-based storage.
+    // With S3, download is handled via a separate streaming method.
+    return null;
+  }
 
-    if (!fs.existsSync(absolutePath)) {
-      this.logger.warn(`File not found at path: ${absolutePath}`);
-      return null;
+  /**
+   * Get S3 object stream and content type for a contract file.
+   * Used by controller to stream PDF to the client.
+   */
+  async getContractFileStream(
+    contractId: string,
+    fileId: string,
+  ): Promise<{ body: AsyncIterable<Uint8Array>; contentType: string }> {
+    const contractFile = await this.prisma.contractFile.findFirst({
+      where: { id: fileId, contractId },
+    });
+
+    if (!contractFile || !contractFile.storagePath || contractFile.storagePath === 'PENDING') {
+      throw new NotFoundException('File not found');
     }
 
-    return absolutePath;
+    if (!this.s3Bucket) {
+      throw new Error('S3_BUCKET is not configured');
+    }
+
+    const key = contractFile.storagePath;
+    const resp = await this.s3Client.send(
+      new GetObjectCommand({
+        Bucket: this.s3Bucket,
+        Key: key,
+      }),
+    );
+
+    if (!resp.Body) {
+      throw new Error('Empty body returned from S3');
+    }
+
+    const body = resp.Body as unknown as AsyncIterable<Uint8Array>;
+    const contentType = resp.ContentType || 'application/pdf';
+
+    return { body, contentType };
+  }
+
+  /**
+   * Upload PDF, persist to file storage, enqueue ingest job. Returns immediately with 202-style response.
+   */
+  async uploadAndEnqueue(
+    contractId: string,
+    file: Express.Multer.File,
+    dto: UploadContractFileDto,
+  ): Promise<{ contractFileId: string; status: string; message: string }> {
+    if (!file) {
+      throw new BadRequestException('File is required');
+    }
+
+    const contract = await this.prisma.contract.findUnique({ where: { id: contractId } });
+    if (!contract) {
+      throw new NotFoundException(`Contract not found: ${contractId}`);
+    }
+
+    const sanitizedOriginalName = path
+      .basename(file.originalname || 'document.pdf')
+      .replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    const contractFile = await this.prisma.contractFile.create({
+      data: {
+        contractId,
+        versionNumber: dto.versionNumber ?? 1,
+        originalName: sanitizedOriginalName,
+        mimeType: file.mimetype,
+        storagePath: 'PENDING',
+        status: 'UPLOADED',
+      },
+    });
+
+    await this.persistContractFile(contractId, contractFile.id, file.buffer);
+
+    await this.ingestQueue.add(
+      'ingest',
+      { contractId, contractFileId: contractFile.id },
+      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+    );
+
+    return {
+      contractFileId: contractFile.id,
+      status: 'PENDING',
+      message: 'Processing started. Poll GET /contracts/:id for file status.',
+    };
+  }
+
+  /**
+   * Run full ingest for a contract file (used by worker). Reads file from storagePath, extract -> chunk -> embed -> store.
+   */
+  async runIngestForFile(contractFileId: string): Promise<void> {
+    const contractFile = await this.prisma.contractFile.findUnique({
+      where: { id: contractFileId },
+    });
+    if (!contractFile || !contractFile.storagePath || contractFile.storagePath === 'PENDING') {
+      throw new Error(`ContractFile ${contractFileId} not found or storagePath not ready`);
+    }
+
+    const key = contractFile.storagePath;
+
+    try {
+      if (!this.s3Bucket) {
+        throw new Error('AWS_S3_BUCKET is not configured');
+      }
+
+      const getResp = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.s3Bucket,
+          Key: key,
+        }),
+      );
+
+      const chunks: Uint8Array[] = [];
+      const body = getResp.Body;
+      if (!body) {
+        throw new Error(`Empty body returned from S3 for key ${key}`);
+      }
+
+      for await (const chunk of body as any as AsyncIterable<Uint8Array>) {
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+      const extractedText = await this.extractTextFromPdfBuffer(buffer);
+
+      await this.prisma.contractFile.update({
+        where: { id: contractFileId },
+        data: {
+          extractedText,
+          status: extractedText ? 'EXTRACTED' : 'FAILED',
+        },
+      });
+
+      if (!extractedText) {
+        return;
+      }
+
+      const chunkSize = this.config.get<number>('CHUNK_MAX_CHARS') ?? 3500;
+      const chunkOverlap = this.config.get<number>('CHUNK_OVERLAP_CHARS') ?? 350;
+      const normalizedForChunking = this.normalizeTextForChunking(extractedText);
+      const splitter = new RecursiveCharacterTextSplitter({
+        chunkSize,
+        chunkOverlap,
+      });
+      const splits = await splitter.splitText(normalizedForChunking);
+      const documents: Document[] = splits.map((content, i) => ({
+        pageContent: content,
+        metadata: {
+          contractFileId,
+          chunkIndex: i,
+          chunkId: uuidv4(),
+        },
+      }));
+
+      await this.storeChunks(contractFileId, documents);
+    } catch (err) {
+      await this.prisma.contractFile.update({
+        where: { id: contractFileId },
+        data: { status: 'FAILED' },
+      }).catch(() => {});
+      throw err;
+    }
   }
 
   async uploadPdfAndIngest(contractId: string, file: Express.Multer.File, dto: UploadContractFileDto) {
@@ -104,7 +293,7 @@ export class ContractsService {
 
     await this.persistContractFile(contractId, contractFile.id, file.buffer);
 
-    const extractedText = await this.extractTextFromPdfBuffer(file.buffer); 
+    const extractedText = await this.extractTextFromPdfBuffer(file.buffer);
 
     await this.prisma.contractFile.update({
       where: { id: contractFile.id },
@@ -125,22 +314,12 @@ export class ContractsService {
 
     const chunkSize = this.config.get<number>('CHUNK_MAX_CHARS') ?? 3500;
     const chunkOverlap = this.config.get<number>('CHUNK_OVERLAP_CHARS') ?? 350;
-
-    this.logger.log('Extracted text: \n' + extractedText);
-
     const normalizedForChunking = this.normalizeTextForChunking(extractedText);
-
-    this.logger.log('Normalized for chunking: \n' + normalizedForChunking);
-
     const splitter = new RecursiveCharacterTextSplitter({
       chunkSize,
       chunkOverlap,
     });
-    
     const splits = await splitter.splitText(normalizedForChunking);
-
-    // const splits = this.splitTextWithOverlap(normalizedForChunking, chunkSize, chunkOverlap);
-    this.logger.log('Splits: \n' + splits.join('\n-------------------------------\n'));
     const documents: Document[] = splits.map((content, i) => ({
       pageContent: content,
       metadata: {
@@ -167,13 +346,29 @@ export class ContractsService {
     contractFileId: string,
     buffer: Buffer,
   ): Promise<void> {
-    const dir = path.join(UPLOAD_DIR, contractId);
-    fs.mkdirSync(dir, { recursive: true });
-    const storagePath = path.join(dir, `${contractFileId}.pdf`);
-    fs.writeFileSync(storagePath, buffer);
+    if (!this.s3Bucket) {
+      throw new Error('AWS_S3_BUCKET is not configured');
+    }
+
+    const keyParts = [];
+    if (this.s3Prefix) {
+      keyParts.push(this.s3Prefix);
+    }
+    keyParts.push(contractId, `${contractFileId}.pdf`);
+    const key = keyParts.join('/');
+
+    await this.s3Client.send(
+      new PutObjectCommand({
+        Bucket: this.s3Bucket,
+        Key: key,
+        Body: buffer,
+        ContentType: 'application/pdf',
+      }),
+    );
+
     await this.prisma.contractFile.update({
       where: { id: contractFileId },
-      data: { storagePath },
+      data: { storagePath: key },
     });
   }
 

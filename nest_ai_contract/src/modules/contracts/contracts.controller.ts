@@ -3,6 +3,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   Res,
@@ -40,15 +42,20 @@ export class ContractsController {
     @Param('fileId') fileId: string,
     @Res() res: Response,
   ) {
-    const filePath = await this.service.getContractFilePath(contractId, fileId);
-    if (!filePath) {
-      return res.status(404).json({ message: 'File not found' });
+    try {
+      const { body, contentType } = await this.service.getContractFileStream(contractId, fileId);
+      res.setHeader('Content-Type', contentType);
+
+      for await (const chunk of body) {
+        res.write(chunk);
+      }
+      res.end();
+    } catch (err) {
+      if (err instanceof BadRequestException || err instanceof Error) {
+        return res.status(404).json({ message: 'File not found' });
+      }
+      return res.status(500).json({ message: 'Failed to download file' });
     }
-    return res.sendFile(filePath, {
-      headers: {
-        'Content-Type': 'application/pdf',
-      },
-    });
   }
 
   @Get(':id')
@@ -82,6 +89,7 @@ export class ContractsController {
       },
     }),
   )
+  @HttpCode(HttpStatus.ACCEPTED)
   uploadAndIngest(
     @Param('id') contractId: string,
     @UploadedFile() file: Express.Multer.File,
@@ -90,6 +98,6 @@ export class ContractsController {
     if (!file) {
       throw new BadRequestException('Missing file');
     }
-    return this.service.uploadPdfAndIngest(contractId, file, dto);
+    return this.service.uploadAndEnqueue(contractId, file, dto);
   }
 }
