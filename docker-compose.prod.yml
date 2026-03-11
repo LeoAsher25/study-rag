@@ -1,0 +1,61 @@
+# Production / EC2 sau ALB+ASG: không có DB (DB dùng RDS hoặc EC2 riêng).
+# Cung cấp DATABASE_URL, REDIS_URL (và mọi biến cần thiết) qua env / SSM.
+# Chạy: docker-compose -f docker-compose.prod.yml up -d
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ai_contract_redis
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ./nest_ai_contract
+    container_name: ai_contract_api
+    command: node dist/main.js
+    environment:
+      # Trỏ tới RDS hoặc EC2 DB riêng (set qua env khi deploy)
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      UPLOAD_DIR: /app/data/uploads
+      PORT: 4001
+    env_file:
+      - ./nest_ai_contract/.env
+    volumes:
+      - upload_data:/app/data/uploads
+    ports:
+      - "4001:4001"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ./nest_ai_contract
+    container_name: ai_contract_worker
+    command: node dist/worker.js
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      UPLOAD_DIR: /app/data/uploads
+    env_file:
+      - ./nest_ai_contract/.env
+    volumes:
+      - upload_data:/app/data/uploads
+    depends_on:
+      - redis
+
+  frontend:
+    build:
+      context: ./next-ai-contract
+    container_name: ai_contract_frontend
+    environment:
+      PORT: 4000
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://api:4001}
+    depends_on:
+      - api
+    ports:
+      - "4000:4000"
+
+volumes:
+  upload_data:
