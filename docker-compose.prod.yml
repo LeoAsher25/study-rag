@@ -15,8 +15,8 @@ services:
     container_name: ai_contract_api
     command: node dist/main.js
     environment:
-      # Trỏ tới RDS hoặc EC2 DB riêng (set qua env khi deploy)
-      DATABASE_URL: ${DATABASE_URL}
+      # Các biến dưới đây KHÔNG override env_file vì env_file đã có đủ.
+      # DATABASE_URL lấy từ env_file để tránh bị ghi đè bởi empty string khi host không có var.
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       UPLOAD_DIR: /app/data/uploads
       PORT: 4001
@@ -35,7 +35,6 @@ services:
     container_name: ai_contract_worker
     command: node dist/worker.js
     environment:
-      DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       UPLOAD_DIR: /app/data/uploads
     env_file:
