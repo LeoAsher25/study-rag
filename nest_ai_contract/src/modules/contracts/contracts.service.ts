@@ -52,7 +52,7 @@ export class ContractsService {
       },
     });
 
-    return contracts.map((contract) => {
+    return contracts.map((contract: any) => {
       const latestFile = contract.files[0];
       const status = latestFile?.status ?? null;
       const hasReadyFile = status === 'READY';
@@ -83,7 +83,7 @@ export class ContractsService {
 
     return {
       ...contract,
-      files: contract.files.map((file) => ({
+      files: contract.files.map((file: any) => ({
         ...file,
         url: this.getFileUrl(contractId, file.id),
       })),
