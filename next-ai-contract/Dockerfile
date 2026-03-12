@@ -2,15 +2,18 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
+# Dùng Yarn thay cho npm
+RUN npm install -g yarn
 
-RUN npm install
+COPY package.json ./
+
+RUN yarn install --production=false
 
 COPY . .
 
-RUN npm run build
+RUN yarn build
 
 EXPOSE 4000
 
-CMD ["npm", "run", "start", "--", "-p", "4000"]
+CMD ["yarn", "start", "--", "-p", "4000"]
 
