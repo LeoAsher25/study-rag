@@ -2,8 +2,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Dùng Yarn thay cho npm
-RUN npm install -g yarn
+# Dùng Yarn (qua Corepack trong Node 20)
+RUN corepack enable
 
 COPY package.json ./
 
