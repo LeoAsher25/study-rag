@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:20
 
 WORKDIR /app
 
@@ -10,7 +10,6 @@ RUN yarn install --production=false
 
 COPY . .
 
-# Generate Prisma client bên trong image
 RUN npx prisma generate
 
 RUN yarn build
